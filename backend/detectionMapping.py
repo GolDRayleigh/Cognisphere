@@ -1,4 +1,5 @@
 import json
+import urllib.request
 
 def get_precise_india_soil_profile(lat: float, lon: float) -> str:
     print(f"[*] Analyzing Indian Coordinates -> Lat: {lat}, Lon: {lon}")
@@ -101,6 +102,24 @@ def get_precise_india_soil_profile(lat: float, lon: float) -> str:
     }
     
     return json.dumps(payload, indent=4)
+
+def get_soil_profile(lat: float, lon: float):
+    """Soil profile dict for a point, or None if it is outside India."""
+    return json.loads(get_precise_india_soil_profile(lat, lon)).get("soil_profile")
+
+
+def ip_geolocate():
+    """Approximate (city-level) location from the public IP -> (lat, lon, label) or None."""
+    for url, k_lat, k_lon in [("https://ipapi.co/json/", "latitude", "longitude"),
+                              ("http://ip-api.com/json/", "lat", "lon")]:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                d = json.load(r)
+            return float(d[k_lat]), float(d[k_lon]), f"IP location ({d.get('city', 'approx.')})"
+        except Exception:
+            continue
+    return None
+
 
 if __name__ == "__main__":
     print("--- Testing Lucknow, UP Coordinates ---")
