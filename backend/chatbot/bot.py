@@ -11,8 +11,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import chromadb
 
-import live_data
-import llm
+import Livedata
+import Llm
 from embeddings import embed_query
 
 DB_DIR = "chroma_db"
@@ -48,8 +48,10 @@ Rules:
 LIVE_RULES = """
 LIVE DATA rules:
 - Numbers in LIVE DATA were fetched just now. Quote them with the place and date.
-- For weather, connect it to the farm decision (sowing, irrigation, spraying, harvest, frost/heat risk).
-- For mandi prices, mention market names, the date, and that prices are per quintal (100 kg).
+- Weather: connect it to the farm decision (sowing, irrigation, spraying, harvest, frost/heat risk).
+- Mandi prices come from web search snippets: quote only prices that actually appear in the
+  snippets, name the site and any date shown, say prices differ by market and day, and advise
+  checking the local mandi, e-NAM or Agmarknet before selling. Never invent a price.
 - If a block says UNAVAILABLE, tell the user you could not fetch it right now. Never invent
   prices or weather figures.
 - Web search snippets are unverified hints: mention the site names and be careful.
@@ -68,10 +70,9 @@ Rules:
 - weather: when the answer depends on current or coming weather (rain, heat, frost, humidity,
   or timing of sowing/spraying/irrigation/harvest right now, e.g. "can I sow this week").
   Needs a location from the message or earlier messages; if none is known, use null.
-- mandi: for price / rate / bhav / market questions about a crop. commodity in English, Agmarknet
-  style and Title Case (Wheat, Paddy(Dhan)(Common), Maize, Potato, Onion, Tomato, Mustard, Gram,
-  Arhar (Tur/Red Gram)(Whole), Sugarcane, Banana, ...). Use official state names
-  (e.g. Uttar Pradesh) and English district spelling.
+  Use official English names: state like Uttar Pradesh, district like Lucknow.
+- mandi: for price / rate / bhav / market questions about a crop. commodity in plain English
+  (Wheat, Paddy, Maize, Potato, Onion, Tomato, Mustard, Gram, ...). State and district in English.
 - wikipedia: for factual background (what is X; crop, pest, disease, scheme, place, history).
   query = short English article title. lang "hi" only if the user wrote in Hindi script.
 - web_search: for recent news, new scheme announcements, MSP changes, deadlines, subsidies,
@@ -124,7 +125,7 @@ def route(question, history):
     recent = "\n".join(f"{m['role']}: {m['content'][:300]}" for m in history[-4:])
     today = datetime.datetime.now(IST).strftime("%A %d %B %Y")
     user = f"Today: {today}\n\nEarlier messages:\n{recent or '(none)'}\n\nLATEST message:\n{question}"
-    text, _ = llm.chat(
+    text, _ = Llm.chat(
         [{"role": "system", "content": ROUTER_PROMPT}, {"role": "user", "content": user}],
         fast=True, max_tokens=800, temperature=0, effort="low")
     if not text:
@@ -143,27 +144,21 @@ def gather_live(plan):
     tasks, results = {}, {}
     with ThreadPoolExecutor(max_workers=4) as ex:
         if isinstance(w, dict):
-            tasks["Weather"] = ex.submit(live_data.weather, _s(w.get("place")),
+            tasks["Weather"] = ex.submit(Livedata.weather, _s(w.get("place")),
                                          _s(w.get("district")), _s(w.get("state")))
         if isinstance(m, dict):
-            tasks["Mandi prices"] = ex.submit(live_data.mandi, _s(m.get("commodity")),
+            tasks["Mandi prices"] = ex.submit(Livedata.mandi_web, _s(m.get("commodity")),
                                               _s(m.get("state")), _s(m.get("district")))
         if isinstance(wk, dict) and _s(wk.get("query")):
-            tasks["Wikipedia"] = ex.submit(live_data.wikipedia, _s(wk.get("query")),
+            tasks["Wikipedia"] = ex.submit(Livedata.wikipedia, _s(wk.get("query")),
                                            _s(wk.get("lang")) or "en")
         if _s(ws):
-            tasks["Web search"] = ex.submit(live_data.web_search, _s(ws))
+            tasks["Web search"] = ex.submit(Livedata.web_search, _s(ws))
         for name, fut in tasks.items():
             try:
                 results[name] = fut.result(timeout=60)
             except Exception as e:
                 results[name] = f"UNAVAILABLE: {e.__class__.__name__}"
-
-    # If the mandi API failed, try the web for today's rate instead.
-    if (isinstance(m, dict) and results.get("Mandi prices", "").startswith("UNAVAILABLE")
-            and "Web search" not in results):
-        where = _s(m.get("district")) or _s(m.get("state"))
-        results["Web search"] = live_data.web_search(f"{_s(m.get('commodity'))} mandi bhav {where} today")
 
     if not results:
         return "", []
@@ -202,7 +197,7 @@ def answer(question, history=None):
 
     messages = ([{"role": "system", "content": build_system(chunks, live_text)}]
                 + history + [{"role": "user", "content": question}])
-    text, label = llm.chat(messages)
+    text, label = Llm.chat(messages)
     if text is None:
         return ("All free AI services are busy or out of quota right now. "
                 "Please try again in a minute.")
